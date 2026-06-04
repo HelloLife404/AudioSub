@@ -4,6 +4,7 @@
 #include "peer_connection_client.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <utility>
@@ -22,7 +23,11 @@
 #include "rtc_base/ref_counted_object.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/ssl_adapter.h"
+#include "rtc_base/ref_counted_object.h"
 #include "rtc_base/win/scoped_com_initializer.h"
+
+#include "api/stats/rtc_stats_collector_callback.h"
+#include "api/stats/rtcstats_objects.h"
 
 // 核心方法
 // Initialize()                         初始化 WebRTC，创建线程、Factory、PeerConnection 等
@@ -117,6 +122,72 @@ const char* AudioLayerName(webrtc::AudioDeviceModule::AudioLayer layer) {
     default: return "OtherLayer";
   }
 }
+
+// WebRTC stats 里 RTT 单位为秒；本机环回常 <1ms，四舍五入会变成 0。
+int64_t RttSecondsToMs(double rtt_s) {
+  if (rtt_s <= 0.0) return -1;
+  const int64_t ms = static_cast<int64_t>(std::ceil(rtt_s * 1000.0 - 1e-9));
+  return ms > 0 ? ms : 1;
+}
+
+int CandidatePairScore(const webrtc::RTCIceCandidatePairStats& cp) {
+  int score = 0;
+  if (cp.nominated.value_or(false)) score += 100;
+  if (cp.writable.value_or(false)) score += 50;
+  if (cp.state.value_or("") == "succeeded") score += 40;
+  if (cp.packets_sent.value_or(0) + cp.packets_received.value_or(0) > 0) {
+    score += 20;
+  }
+  return score;
+}
+
+// 从报告中挑选「当前在用」的 candidate-pair 的 current_round_trip_time。
+int64_t ExtractTransportRttMs(
+    const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& report) {
+  if (!report) return -1;
+  int best_score = -1;
+  int64_t best_ms = -1;
+  for (const webrtc::RTCStats& stats : *report) {
+    if (std::strcmp(stats.type(), webrtc::RTCIceCandidatePairStats::kType) !=
+        0) {
+      continue;
+    }
+    const auto& cp = stats.cast_to<webrtc::RTCIceCandidatePairStats>();
+    if (!cp.current_round_trip_time.has_value()) continue;
+    const int64_t ms = RttSecondsToMs(*cp.current_round_trip_time);
+    if (ms < 0) continue;
+    const int score = CandidatePairScore(cp);
+    if (score > best_score || (score == best_score && ms > best_ms)) {
+      best_score = score;
+      best_ms = ms;
+    }
+  }
+  return best_ms;
+}
+
+// 从 GetStats 报告里解析 ICE candidate-pair 的 current_round_trip_time（秒 → ms）。
+class RttStatsCollector : public webrtc::RTCStatsCollectorCallback {
+ public:
+  RttStatsCollector(std::atomic<int64_t>* out_ms,
+                    PeerConnectionClient::RttSampleCallback on_sample)
+      : out_ms_(out_ms), on_sample_(std::move(on_sample)) {}
+
+  void OnStatsDelivered(
+      const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& report) override {
+    const int64_t ms = ExtractTransportRttMs(report);
+    if (ms < 0) return;
+    if (out_ms_) {
+      out_ms_->store(ms, std::memory_order_relaxed);
+    }
+    if (on_sample_) {
+      on_sample_(ms);
+    }
+  }
+
+ private:
+  std::atomic<int64_t>* const out_ms_;
+  PeerConnectionClient::RttSampleCallback on_sample_;
+};
 
 }  // namespace
 
@@ -399,6 +470,17 @@ bool PeerConnectionClient::Initialize() {
   pc_ = pc_or.MoveValue();
   RTC_LOG(LS_INFO) << "[pc] initialized";
   return true;
+}
+
+void PeerConnectionClient::RequestRttUpdate() {
+  if (!pc_) return;
+  auto collector = webrtc::make_ref_counted<RttStatsCollector>(
+      &last_rtt_ms_, rtt_sample_cb_);
+  pc_->GetStats(collector.get());
+}
+
+int64_t PeerConnectionClient::GetLastRttMs() const {
+  return last_rtt_ms_.load(std::memory_order_relaxed);
 }
 
 void PeerConnectionClient::Close() {
@@ -825,6 +907,9 @@ void PeerConnectionClient::OnIceConnectionChange(
 void PeerConnectionClient::OnConnectionChange(
     webrtc::PeerConnectionInterface::PeerConnectionState new_state) {
   if (state_cb_) state_cb_(PeerConnectionStateName(new_state));
+  if (new_state == webrtc::PeerConnectionInterface::PeerConnectionState::kConnected) {
+    RequestRttUpdate();
+  }
 }
 
 // ===========================================================================

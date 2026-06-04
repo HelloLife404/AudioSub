@@ -289,7 +289,8 @@ void WhisperCppEngine::RunInference() {
   seg.end_ms = end_ms;
   seg.text = text;
   seg.is_final = true;
-  seg.latency_ms = infer_latency_ms;
+  seg.infer_ms = infer_latency_ms;
+  seg.ready_ms = end_ms - start_ms;
   consumer_->OnSubtitleSegment(seg);
 }
 

@@ -104,14 +104,14 @@ void Backend::OnSubtitle(void* user, const AudiosubSubtitle* sub) {
     marks << line;
   }
   emit self->subtitleEvent(QString::fromUtf8(sub->text), sub->start_ms,
-                           sub->end_ms, sub->latency_ms, sub->remote != 0,
+                           sub->end_ms, sub->ready_ms, sub->remote != 0,
                            marks);
 }
 
-void Backend::OnMark(void* user, uint64_t seq, const char* text, int64_t vis) {
+void Backend::OnMark(void* user, uint64_t seq, const char* text) {
   auto* self = static_cast<Backend*>(user);
   (void)seq;
-  emit self->markEvent(QString::fromUtf8(text), vis);
+  emit self->markEvent(QString::fromUtf8(text));
 }
 
 void Backend::OnOrphan(void* user, uint64_t seq, const char* text) {
@@ -206,15 +206,15 @@ MainWindow::MainWindow(const QString& id, const QString& host, int port,
   auto* ml = new QHBoxLayout(metricBar);
   ml->setContentsMargins(20, 8, 20, 8);
   ml->setSpacing(22);
-  metricLat_ = new QLabel("字幕延迟: 暂无样本", metricBar);
+  metricRtt_ = new QLabel("传输 RTT: 暂无样本", metricBar);
+  metricReady_ = new QLabel("出字延迟: 暂无样本", metricBar);
   metricErr_ = new QLabel("标注误差: 暂无样本", metricBar);
-  metricVis_ = new QLabel("可见延迟: 暂无样本", metricBar);
-  metricLat_->setObjectName("metric");
+  metricRtt_->setObjectName("metric");
+  metricReady_->setObjectName("metric");
   metricErr_->setObjectName("metric");
-  metricVis_->setObjectName("metric");
-  ml->addWidget(metricLat_);
+  ml->addWidget(metricRtt_);
+  ml->addWidget(metricReady_);
   ml->addWidget(metricErr_);
-  ml->addWidget(metricVis_);
   ml->addStretch(1);
   rv->addWidget(metricBar);
 
@@ -473,7 +473,7 @@ void MainWindow::onState(QString line) {
 }
 
 void MainWindow::onSubtitle(QString text, qint64 startMs, qint64 endMs,
-                            qint64 latencyMs, bool remote, QStringList markLines) {
+                            qint64 readyMs, bool remote, QStringList markLines) {
   (void)remote;
   // 讲话方恒为 A：本端是 A 则靠右（我说的），否则靠左（对端 A 说的）。
   const bool mine = isOfferer_;
@@ -491,21 +491,19 @@ void MainWindow::onSubtitle(QString text, qint64 startMs, qint64 endMs,
   if (startMs > 0) {
     const QString t1 = QDateTime::fromMSecsSinceEpoch(startMs).toString("HH:mm:ss");
     const QString t2 = QDateTime::fromMSecsSinceEpoch(endMs).toString("HH:mm:ss");
-    footer = QString("%1–%2 · 延迟%3ms").arg(t1, t2).arg(latencyMs);
+    footer = QString("%1–%2 · 出字 %3ms").arg(t1, t2).arg(readyMs);
   } else {
-    footer = QString("延迟%1ms").arg(latencyMs);
+    footer = QString("出字 %1ms").arg(readyMs);
   }
-  if (latencyMs > 1500) footer += " ⚠";
+  if (readyMs > 4000) footer += " ⚠";
 
   appendMessage(mine, name, body, footer);
 }
 
-void MainWindow::onMark(QString text, qint64 visMs) {
-  // OnMark 只在「接收方」触发，所以这一定是对端发来的标注。
-  QString footer = QString("标注 · 可见延迟%1ms").arg(visMs);
-  if (visMs > 300) footer += " ⚠";
+void MainWindow::onMark(QString text) {
   appendMessage(false, peerName_,
-                QString("<span>📌 %1</span>").arg(text.toHtmlEscaped()), footer);
+                QString("<span>📌 %1</span>").arg(text.toHtmlEscaped()),
+                QStringLiteral("标注"));
 }
 
 void MainWindow::onOrphan(QString text) {
@@ -546,10 +544,10 @@ static QString metricText(const char* name, int64_t count, int64_t sum,
 
 void MainWindow::refreshMetrics() {
   const AudiosubMetrics m = backend_->metrics();
-  metricLat_->setText(
-      metricText("字幕延迟", m.lat_count, m.lat_sum, m.lat_max, 1500));
+  metricRtt_->setText(
+      metricText("传输 RTT", m.rtt_count, m.rtt_sum, m.rtt_max, 200));
+  metricReady_->setText(
+      metricText("出字延迟", m.ready_count, m.ready_sum, m.ready_max, 4000));
   metricErr_->setText(
       metricText("标注误差", m.err_count, m.err_sum, m.err_max, 500));
-  metricVis_->setText(
-      metricText("可见延迟", m.vis_count, m.vis_sum, m.vis_max, 300));
 }

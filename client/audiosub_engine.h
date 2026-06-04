@@ -46,7 +46,7 @@ struct SubtitleEvent {
   std::int64_t start_ms = 0;   // 起始现实时间（Unix ms）
   std::int64_t end_ms = 0;     // 结束现实时间（Unix ms）
   std::string text;
-  std::int64_t latency_ms = 0;  // 端到端字幕延迟（识别推理耗时）
+  std::int64_t ready_ms = 0;    // 出字延迟：end_ms - start_ms（B 端收段到出字幕）
   bool remote = false;          // false=本端识别, true=对端回传
   std::vector<MarkInfo> marks;  // 对齐到本条字幕的标注
 };
@@ -59,9 +59,9 @@ struct MetricStat {
 };
 
 struct MetricsSummary {
-  MetricStat lat;  // 端到端字幕延迟
-  MetricStat err;  // 标注匹配误差
-  MetricStat vis;  // DataChannel 标注可见延迟
+  MetricStat rtt;    // WebRTC ICE 往返时延（传输 RTT）
+  MetricStat ready;  // 出字延迟（B 端收段到字幕）
+  MetricStat err;    // 标注与字幕时间窗匹配误差
 };
 
 // 引擎核心类。所有重逻辑（WebRTC、ASR、融合）都在内部后台线程跑。
@@ -78,8 +78,7 @@ class AudiosubEngine : public core::ISubtitleConsumer {
   // 事件回调签名（均可能在后台线程被调用）。
   using StateCb = std::function<void(const std::string& state)>;
   using SubtitleCb = std::function<void(const SubtitleEvent& sub)>;
-  using MarkCb = std::function<void(std::uint64_t seq, const std::string& text,
-                                    std::int64_t visible_ms)>;
+  using MarkCb = std::function<void(std::uint64_t seq, const std::string& text)>;
   using OrphanCb =
       std::function<void(std::uint64_t seq, const std::string& text)>;
 
@@ -114,7 +113,7 @@ class AudiosubEngine : public core::ISubtitleConsumer {
   void Stop();
 
   // 当前累计指标快照。
-  MetricsSummary GetMetrics() const;
+  MetricsSummary GetMetrics();
 
   // ISubtitleConsumer：ASR 线程产出一条字幕时回调。
   void OnSubtitleSegment(const core::SubtitleSegment& segment) override;
@@ -124,9 +123,10 @@ class AudiosubEngine : public core::ISubtitleConsumer {
   void HandlePeerMessage(const std::string& text);
 
   // 指标累计（线程安全）。
-  void AddLat(std::int64_t v);
+  void AddRtt(std::int64_t v);
+  void AddReady(std::int64_t v);
   void AddErr(std::int64_t v);
-  void AddVis(std::int64_t v);
+  void SampleTransportRtt();
 
   // === 配置 / 角色 ===
   Config cfg_;

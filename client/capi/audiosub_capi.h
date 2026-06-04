@@ -45,24 +45,23 @@ typedef struct {
   int64_t start_ms;
   int64_t end_ms;
   const char* text;  // UTF-8，仅回调期间有效
-  int64_t latency_ms;
-  int remote;  // 0=本端识别, 1=对端回传
+  int64_t ready_ms;  // 出字延迟（B 端收段到字幕）
+  int remote;        // 0=本端识别, 1=对端回传
   const AudiosubMark* marks;
   int mark_count;
 } AudiosubSubtitle;
 
 // 指标快照（次数/总和/峰值）。
 typedef struct {
-  int64_t lat_count, lat_sum, lat_max;  // 端到端字幕延迟
-  int64_t err_count, err_sum, err_max;  // 标注匹配误差
-  int64_t vis_count, vis_sum, vis_max;  // 标注可见延迟
+  int64_t rtt_count, rtt_sum, rtt_max;          // 传输 RTT
+  int64_t ready_count, ready_sum, ready_max;    // 出字延迟
+  int64_t err_count, err_sum, err_max;          // 标注匹配误差
 } AudiosubMetrics;
 
 // 回调类型（均在后台线程被调用）。
 typedef void (*AudiosubStateFn)(void* user, const char* state_utf8);
 typedef void (*AudiosubSubtitleFn)(void* user, const AudiosubSubtitle* sub);
-typedef void (*AudiosubMarkFn)(void* user, uint64_t seq, const char* text_utf8,
-                               int64_t visible_ms);
+typedef void (*AudiosubMarkFn)(void* user, uint64_t seq, const char* text_utf8);
 typedef void (*AudiosubOrphanFn)(void* user, uint64_t seq,
                                  const char* text_utf8);
 

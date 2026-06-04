@@ -45,11 +45,18 @@ AudiosubEngine::AudiosubEngine() = default;
 
 AudiosubEngine::~AudiosubEngine() { Stop(); }
 
-void AudiosubEngine::AddLat(std::int64_t v) {
+void AudiosubEngine::AddRtt(std::int64_t v) {
   std::lock_guard<std::mutex> g(metrics_mutex_);
-  if (metrics_.lat.count == 0 || v > metrics_.lat.max) metrics_.lat.max = v;
-  ++metrics_.lat.count;
-  metrics_.lat.sum += v;
+  if (metrics_.rtt.count == 0 || v > metrics_.rtt.max) metrics_.rtt.max = v;
+  ++metrics_.rtt.count;
+  metrics_.rtt.sum += v;
+}
+
+void AudiosubEngine::AddReady(std::int64_t v) {
+  std::lock_guard<std::mutex> g(metrics_mutex_);
+  if (metrics_.ready.count == 0 || v > metrics_.ready.max) metrics_.ready.max = v;
+  ++metrics_.ready.count;
+  metrics_.ready.sum += v;
 }
 
 void AudiosubEngine::AddErr(std::int64_t v) {
@@ -59,14 +66,13 @@ void AudiosubEngine::AddErr(std::int64_t v) {
   metrics_.err.sum += v;
 }
 
-void AudiosubEngine::AddVis(std::int64_t v) {
-  std::lock_guard<std::mutex> g(metrics_mutex_);
-  if (metrics_.vis.count == 0 || v > metrics_.vis.max) metrics_.vis.max = v;
-  ++metrics_.vis.count;
-  metrics_.vis.sum += v;
+void AudiosubEngine::SampleTransportRtt() {
+  // GetStats 为异步回调；样本在 SetRttSampleCallback 里入账，不能在此处同步读。
+  pc_.RequestRttUpdate();
 }
 
-MetricsSummary AudiosubEngine::GetMetrics() const {
+MetricsSummary AudiosubEngine::GetMetrics() {
+  SampleTransportRtt();
   std::lock_guard<std::mutex> g(metrics_mutex_);
   return metrics_;
 }
@@ -143,6 +149,12 @@ bool AudiosubEngine::Start(const Config& cfg) {
   });
 
   pc_.SetMessageCallback([this](const std::string& text) { HandlePeerMessage(text); });
+
+  pc_.SetRttSampleCallback([this](std::int64_t rtt_ms) {
+    if (rtt_ms > 0) {
+      AddRtt(rtt_ms);
+    }
+  });
 
   pc_.SetLocalAudioFrameCallback([this](const core::PcmFrame& frame) {
     if (!local_audio_buffer_.Push(frame)) {
@@ -237,9 +249,9 @@ void AudiosubEngine::OnSubtitleSegment(const core::SubtitleSegment& seg) {
   ev.start_ms = seg.start_ms;
   ev.end_ms = seg.end_ms;
   ev.text = seg.text;
-  ev.latency_ms = seg.latency_ms;
+  ev.ready_ms = seg.ready_ms;
   ev.remote = false;
-  AddLat(seg.latency_ms);
+  AddReady(seg.ready_ms);
   for (const core::MarkMessage& mark : enhanced.marks) {
     const std::int64_t err =
         MarkMatchError(mark.event_time_ms, seg.start_ms, seg.end_ms);
@@ -268,7 +280,7 @@ void AudiosubEngine::OnSubtitleSegment(const core::SubtitleSegment& seg) {
       {"index", n},
       {"start_ms", seg.start_ms},
       {"end_ms", seg.end_ms},
-      {"latency_ms", seg.latency_ms},
+      {"ready_ms", seg.ready_ms},
       {"payload", {{"text", seg.text}}},
       {"marks", marks},
   };
@@ -288,12 +300,8 @@ void AudiosubEngine::HandlePeerMessage(const std::string& text) {
       if (j.contains("payload") && j["payload"].is_object()) {
         mark.text = j["payload"].value("text", std::string());
       }
-      // 可见延迟：A 发出(event_time_ms) -> B 此刻收到。
-      const std::int64_t vis_ms = NowUnixMs() - mark.event_time_ms;
-      // 按 seq 去重；只有首次收到才上报 + 计入指标。
       if (mark_fuser_.AddMark(mark)) {
-        AddVis(vis_ms);
-        if (mark_cb_) mark_cb_(mark.seq, mark.text, vis_ms);
+        if (mark_cb_) mark_cb_(mark.seq, mark.text);
       }
       return;
     }
@@ -304,12 +312,14 @@ void AudiosubEngine::HandlePeerMessage(const std::string& text) {
       ev.index = j.value("index", 0);
       ev.start_ms = j.value("start_ms", std::int64_t{0});
       ev.end_ms = j.value("end_ms", std::int64_t{0});
-      ev.latency_ms = j.value("latency_ms", std::int64_t{0});
+      ev.ready_ms = j.value("ready_ms", std::int64_t{0});
       ev.remote = true;
       if (j.contains("payload") && j["payload"].is_object()) {
         ev.text = j["payload"].value("text", std::string());
       }
-      AddLat(ev.latency_ms);
+      if (ev.ready_ms > 0) {
+        AddReady(ev.ready_ms);
+      }
       if (j.contains("marks") && j["marks"].is_array()) {
         for (const auto& mk : j["marks"]) {
           const std::int64_t err = mk.value("err_ms", std::int64_t{0});

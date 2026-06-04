@@ -1,6 +1,6 @@
 # AudioSub 当前实现链路梳理
 
-本文是当前 `backup/agent-snapshot-2026-05-25` 分支的实现说明，目标是帮助你快速回答三件事：
+本文是当前主干实现的**链路速查**（L0~L8），目标是帮助你快速回答三件事：
 
 1. 每条链路从哪里进入、在哪里结束；
 2. 中间经过哪些模块；
@@ -24,16 +24,18 @@
 ## L0 启动与应用层编排链路
 
 **入口**
-- `client/main.cc` `main()`
+- CLI：`client/main.cc` `main()` → `AudiosubEngine::Start()`
+- GUI：`gui/main.cpp` → `audiosub_capi` → 同上引擎
 
 **结束**
-- 进入 `std::getline` 输入循环，等待用户命令/消息
+- CLI：进入 `std::getline` 命令循环；GUI：事件循环 + 引擎后台线程
 
 **关键职责**
-- 解析命令行；
-- 创建 `PeerConnectionClient` 与 `SignalingClient`；
-- 设置所有应用层回调；
-- 启动信令连接和主命令循环。
+- 解析 `--id` / `--host` / `--port` / `--audio-path`；
+- 引擎内创建并接线 `PeerConnectionClient`、`SignalingClient`、ASR、融合器；
+- 注册状态/字幕/标注回调；B 端启动 ASR 消费线程。
+
+> 如何运行见 [usage-guide.md](usage-guide.md)；指标定义见 [latency-metrics.md](latency-metrics.md)。
 
 ---
 
@@ -132,8 +134,8 @@
 **关键职责**
 - 在 `OnTrack()` 给远端 `AudioTrack` 绑定 `RemoteAudioSink`；
 - `RemoteAudioSink::OnData()` 把 WebRTC PCM 转成统一 `core::PcmFrame`；
-- `DeliverRemoteAudioFrame()` 回调应用层；
-- `main.cc` 推入 `remote_audio_buffer` 并在监控线程计算电平。
+- `DeliverRemoteAudioFrame()` 回调 `AudiosubEngine`；
+- 引擎推入 `remote_audio_buffer_` / `remote_audio_asr_buffer_`，ASR 线程经 `AsrAudioConverter` 喂给 whisper。
 
 ---
 
@@ -146,7 +148,7 @@
 - socket、DataChannel、PeerConnection、ADM、线程全部释放
 
 **关键职责**
-- 先停信令，再 `pc.Close()`；
+- `AudiosubEngine::Stop()`：先停信令，再 `pc_.Close()`；
 - `Close()` 中按顺序关 DC -> PC -> ADM -> 线程；
 - 卸载 remote sink，防止回调访问悬空对象；
 - 关闭 ring buffer 让监控线程退出并 `join`。

@@ -21,7 +21,8 @@ struct SubtitleSegment {
   int64_t end_ms = 0; // 结束时间
   std::string text; // 文本
   bool is_final = false; // 是否是最终结果
-  int64_t latency_ms = 0; // 识别推理耗时（端到端字幕延迟指标）
+  int64_t infer_ms = 0;   // whisper_full 推理耗时（steady_clock，调试用）
+  int64_t ready_ms = 0;   // 出字延迟：end_ms - start_ms（B 端收段到出字幕）
 };
 
 // A structured annotation message sent over DataChannel.

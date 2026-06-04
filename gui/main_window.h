@@ -49,15 +49,15 @@ class Backend : public QObject {
   // 所有参数都是值类型（QString/数值/QStringList），可安全跨线程拷贝投递。
   void stateEvent(QString line);
   void subtitleEvent(QString text, qint64 startMs, qint64 endMs,
-                     qint64 latencyMs, bool remote, QStringList markLines);
-  void markEvent(QString text, qint64 visMs);
+                     qint64 readyMs, bool remote, QStringList markLines);
+  void markEvent(QString text);
   void orphanEvent(QString text);
 
  private:
   // C 回调蹦床（trampoline）：user 即 this。
   static void OnState(void* user, const char* s);
   static void OnSubtitle(void* user, const AudiosubSubtitle* sub);
-  static void OnMark(void* user, uint64_t seq, const char* text, int64_t vis);
+  static void OnMark(void* user, uint64_t seq, const char* text);
   static void OnOrphan(void* user, uint64_t seq, const char* text);
 
   AudiosubEngineHandle* h_ = nullptr;
@@ -84,9 +84,9 @@ class MainWindow : public QMainWindow {
 
  private slots:
   void onState(QString line);
-  void onSubtitle(QString text, qint64 startMs, qint64 endMs, qint64 latencyMs,
+  void onSubtitle(QString text, qint64 startMs, qint64 endMs, qint64 readyMs,
                   bool remote, QStringList markLines);
-  void onMark(QString text, qint64 visMs);
+  void onMark(QString text);
   void onOrphan(QString text);
   void onTalkToggled(bool on);
   void onSendNote();
@@ -117,8 +117,8 @@ class MainWindow : public QMainWindow {
   QPushButton* talkButton_ = nullptr;
   QLineEdit* noteEdit_ = nullptr;
   QPushButton* noteButton_ = nullptr;
-  QLabel* metricLat_ = nullptr;
+  QLabel* metricRtt_ = nullptr;
+  QLabel* metricReady_ = nullptr;
   QLabel* metricErr_ = nullptr;
-  QLabel* metricVis_ = nullptr;
   QTimer* metricTimer_ = nullptr;
 };

@@ -1,6 +1,6 @@
 # AudioSub 链路详解（流程图 + 逐环节说明）
 
-本文面向「想彻底搞懂每条链路每个环节」的读者，配合 [docs/current-implementation-flow.md](current-implementation-flow.md)（速查版）一起看。每节都给出：**做什么 → 怎么做（关键代码） → 为什么这么做**，并配流程图 / 时序图。
+本文面向「想搞懂每条链路每个环节」的读者，配合 [current-implementation-flow.md](current-implementation-flow.md)（速查）与 [usage-guide.md](usage-guide.md)（如何运行）一起看。每节给出：**做什么 → 关键代码 → 设计要点**，并配流程图。
 
 > 关键事实速记
 > - 讲话方恒为 **A（offerer）**，B 是接收/识别方。
@@ -287,13 +287,13 @@ flowchart TD
     FLUSH -- 否 --> WAIT[继续累积]
     FLUSH -- 是 --> ENERGY{整段平均振幅≥0.004<br/>且峰值≥0.02?}
     ENERGY -- 否 --> DROP2[丢弃<br/>挡静音幻觉]
-    ENERGY -- 是 --> INF[whisper_full 推理<br/>steady_clock 计时=latency]
+    ENERGY -- 是 --> INF[whisper_full 推理<br/>steady_clock→infer_ms]
     INF --> NSP{no_speech_prob>0.6?}
     NSP -- 是 --> DROP3[丢弃幻觉]
     NSP -- 否 --> SIMP[繁→简 LCMapStringEx]
     SIMP --> KW[关键词黑名单过滤]
     KW --> DEDUP[与上句去重]
-    DEDUP --> EMIT[OnSubtitleSegment<br/>start/end=wall-clock, latency]
+    DEDUP --> EMIT[OnSubtitleSegment<br/>start/end + ready_ms]
 ```
 
 要点：
@@ -302,7 +302,7 @@ flowchart TD
 - **分段策略**：攒满 4 秒（`kSegmentSamples=64000`）强制 flush，或说话后连续静音 ~0.6 秒（60 帧）且已攒够 1 秒提前 flush。每次 flush = 一次 `whisper_full` = 一段字幕，随后清空（不做滑窗重复识别）。
 - **三道幻觉防线**：能量门限 → whisper 的 `no_speech_prob>0.6` → 关键词黑名单（"谢谢观看/点赞/字幕"等）。
 - **繁→简**：whisper 中文默认输出繁体，用 Win32 `LCMapStringEx` 转简体。
-- **延迟指标**：用 `steady_clock` 量 `whisper_full` 耗时写进 `SubtitleSegment::latency_ms`，作为端到端字幕延迟近似。
+- **时间指标**：`infer_ms` = `whisper_full` 推理耗时（调试用）；**`ready_ms` = `end_ms - start_ms`**（段首帧进缓冲 → 出字幕，界面「出字延迟」）。
 - **时间轴**：字幕 `start_ms` 取该段音频**首帧进缓冲的 Unix 毫秒**，`end_ms` 取识别完成时刻——这样字幕和标注能在同一条现实时间轴上对齐。
 
 ---
@@ -319,7 +319,7 @@ flowchart TD
 ```
 
 - 发送：`AudiosubEngine::SendNote()` 自增 `seq`、取当前 Unix 毫秒为 `event_time_ms`，`Serialize` 后 `pc_.SendMessage`（文本帧 binary=false）。
-- 接收：`OnMessage`（binary=false）→ `HandlePeerMessage`，按 `type` 分流。`annotation` 交给融合器 `AddMark`（按 `seq` 去重），并算**可见延迟** `now - event_time_ms`。
+- 接收：`OnMessage`（binary=false）→ `HandlePeerMessage`，按 `type` 分流。`annotation` 交给融合器 `AddMark`（按 `seq` 去重），经 `mark_cb_` 通知 UI。
 - 文本帧 vs 二进制帧：同一条 channel 上，`binary=true` 是 WASAPI PCM，`binary=false` 是这套 JSON 协议，互不干扰。
 
 ---
@@ -349,11 +349,11 @@ flowchart TD
 
 ## 8. B → A 字幕回传
 
-B 端每产出一条增强字幕，`OnSubtitleSegment` 末尾把它打包成 `type:"subtitle"` 的 JSON（含 index/start/end/latency/text/marks）发回 A：
+B 端每产出一条增强字幕，`OnSubtitleSegment` 末尾把它打包成 `type:"subtitle"` 的 JSON（含 index/start/end/ready_ms/text/marks）发回 A：
 
 ```json
 { "type":"subtitle", "index":3, "start_ms":..., "end_ms":...,
-  "latency_ms":820, "payload":{"text":"..."},
+  "ready_ms":2400, "payload":{"text":"..."},
   "marks":[{"seq":7,"text":"...","err_ms":120}] }
 ```
 
@@ -363,15 +363,17 @@ A 端 `HandlePeerMessage` 收到 `subtitle` → 还原成 `SubtitleEvent(remote=
 
 ## 9. 指标观测（三项 + 退出汇总）
 
-| 指标 | 目标 | 计算点 | 代码 |
-|------|------|--------|------|
-| 端到端字幕延迟 `lat` | ≤1500ms | `whisper_full` 推理耗时 | `RunInference` steady_clock |
-| 标注匹配误差 `err` | ≤500ms | 标注时刻到字幕时间窗的距离 | `MarkMatchError` |
-| DataChannel 可见延迟 `vis` | ≤300ms | `now - event_time_ms`（接收方侧） | `HandlePeerMessage` |
+| 指标 | 参考预算 | 计算点 | 代码 |
+|------|----------|--------|------|
+| 传输 RTT `rtt` | ≤200ms（同机更小） | `GetStats` → `current_round_trip_time` | `peer_connection_client.cc` → `AddRtt` |
+| 出字延迟 `ready` | ≤4000ms | `ready_ms = end_ms - start_ms` | `whisper_cpp_engine.cc` → `AddReady` |
+| 标注匹配误差 `err` | ≤500ms | `MarkMatchError` | `audiosub_engine.cc` → `AddErr` |
 
-- 三项都用线程安全的 `MetricStat{count,sum,max}` 累计（`AddLat/AddErr/AddVis`，一把 `metrics_mutex_`）。
-- CLI 退出时打印均值/峰值汇总；GUI 顶部指标条 `QTimer` 每 500ms 拉一次快照刷新。
-- `vis` 只有**接收标注的那一端**才有样本：如果你在发标注的 A 端，看到"可见延迟 暂无样本"是正常的，要在对端观察。
+- 三项用线程安全的 `MetricStat{count,sum,max}` 累计（`AddRtt/AddReady/AddErr`，一把 `metrics_mutex_`）。
+- RTT 在 **GetStats 异步回调**里入账；`GetMetrics()` 只触发采样请求，不同步读缓存。
+- CLI 退出时打印均值/峰值；GUI 顶栏 `QTimer` 约每 500ms 拉快照。
+
+详见 [latency-metrics.md](latency-metrics.md)。
 
 ---
 
@@ -398,7 +400,7 @@ flowchart LR
 - **重采样质量**：当前 `ResampleLinear` 是线性插值，专业做法用多相 FIR / sinc，注意抗混叠。
 - **VAD**：现在是能量门限，工业级用 WebRTC VAD 或 Silero VAD（基于模型）。
 - **whisper 流式/滑窗**：当前是固定分段，进阶可做 overlap 滑窗 + 增量解码降低延迟。
-- **时钟同步**：跨机时两端 Unix 时钟可能有偏差，会影响 `vis`/对齐，生产环境需 NTP 或相对时钟校正。
+- **时钟同步**：跨机时两端 Unix 时钟可能有偏差，会影响标注与字幕对齐，生产环境需 NTP 或相对时钟校正。
 - **C ABI 跨运行时**：为什么 WebRTC(`/MT`) 与 Qt(`/MD`) 必须用纯 C 接口 DLL 隔离，见 [client/capi/audiosub_capi.h](../client/capi/audiosub_capi.h)。
 - **COM 套间模型（STA vs MTA）**：Qt 主线程 STA 与 WebRTC 要求 MTA 的冲突，及其后台线程化解法。
 

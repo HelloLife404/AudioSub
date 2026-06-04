@@ -75,7 +75,7 @@ AUDIOSUB_API void audiosub_set_subtitle_cb(AudiosubEngineHandle* h,
         sub.start_ms = ev.start_ms;
         sub.end_ms = ev.end_ms;
         sub.text = ev.text.c_str();
-        sub.latency_ms = ev.latency_ms;
+        sub.ready_ms = ev.ready_ms;
         sub.remote = ev.remote ? 1 : 0;
         sub.marks = c_marks.empty() ? nullptr : c_marks.data();
         sub.mark_count = static_cast<int>(c_marks.size());
@@ -89,9 +89,8 @@ AUDIOSUB_API void audiosub_set_mark_cb(AudiosubEngineHandle* h,
   EngineImpl* impl = Cast(h);
   impl->mark_fn = fn;
   impl->mark_user = user;
-  impl->engine.SetMarkCallback([impl](std::uint64_t seq, const std::string& text,
-                                      std::int64_t vis_ms) {
-    if (impl->mark_fn) impl->mark_fn(impl->mark_user, seq, text.c_str(), vis_ms);
+  impl->engine.SetMarkCallback([impl](std::uint64_t seq, const std::string& text) {
+    if (impl->mark_fn) impl->mark_fn(impl->mark_user, seq, text.c_str());
   });
 }
 
@@ -140,15 +139,15 @@ AUDIOSUB_API void audiosub_get_metrics(AudiosubEngineHandle* h,
                                        AudiosubMetrics* out) {
   if (!h || !out) return;
   const audiosub::engine::MetricsSummary m = Cast(h)->engine.GetMetrics();
-  out->lat_count = m.lat.count;
-  out->lat_sum = m.lat.sum;
-  out->lat_max = m.lat.max;
+  out->rtt_count = m.rtt.count;
+  out->rtt_sum = m.rtt.sum;
+  out->rtt_max = m.rtt.max;
+  out->ready_count = m.ready.count;
+  out->ready_sum = m.ready.sum;
+  out->ready_max = m.ready.max;
   out->err_count = m.err.count;
   out->err_sum = m.err.sum;
   out->err_max = m.err.max;
-  out->vis_count = m.vis.count;
-  out->vis_sum = m.vis.sum;
-  out->vis_max = m.vis.max;
 }
 
 AUDIOSUB_API void audiosub_stop(AudiosubEngineHandle* h) {

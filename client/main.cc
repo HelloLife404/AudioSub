@@ -144,7 +144,7 @@ int main(int argc, char** argv) {
   engine.SetSubtitleCallback([](const audiosub::engine::SubtitleEvent& ev) {
     Println("[sub] #" + std::to_string(ev.index) + " " +
             FormatWallClock(ev.start_ms) + " - " + FormatWallClock(ev.end_ms) +
-            " " + ev.text + FormatMetric("lat", ev.latency_ms, 1500));
+            " " + ev.text + FormatMetric("出字", ev.ready_ms, 4000));
     for (const audiosub::engine::MarkInfo& mk : ev.marks) {
       Println("        \u2514\u2500 [\u6807\u6ce8#" + std::to_string(mk.seq) +
               "] " + mk.text + FormatMetric("err", mk.err_ms, 500));
@@ -152,11 +152,9 @@ int main(int argc, char** argv) {
   });
 
   // 收到对端标注。
-  engine.SetMarkCallback(
-      [](std::uint64_t seq, const std::string& text, std::int64_t vis_ms) {
-        Println("[mark #" + std::to_string(seq) + "] " + text +
-                FormatMetric("vis", vis_ms, 300));
-      });
+  engine.SetMarkCallback([](std::uint64_t seq, const std::string& text) {
+    Println("[mark #" + std::to_string(seq) + "] " + text);
+  });
 
   // 无归属标注。
   engine.SetOrphanCallback([](std::uint64_t seq, const std::string& text) {
@@ -226,9 +224,9 @@ int main(int argc, char** argv) {
   // 退出汇总：放在引擎清理之前打印（避免清理流程卡住时看不到统计）。
   const audiosub::engine::MetricsSummary m = engine.GetMetrics();
   Println("==== \u6307\u6807\u6c47\u603b ====");
-  Println(FormatStatLine("\u7aef\u5230\u7aef\u5b57\u5e55\u5ef6\u8fdf", m.lat, 1500));
+  Println(FormatStatLine("\u4f20\u8f93 RTT", m.rtt, 200));
+  Println(FormatStatLine("\u51fa\u5b57\u5ef6\u8fdf", m.ready, 4000));
   Println(FormatStatLine("\u6807\u6ce8\u5339\u914d\u8bef\u5dee", m.err, 500));
-  Println(FormatStatLine("\u6807\u6ce8\u53ef\u89c1\u5ef6\u8fdf", m.vis, 300));
 
   engine.Stop();
   std::cout << "bye.\n";

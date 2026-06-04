@@ -73,6 +73,9 @@ class PeerConnectionClient : public webrtc::PeerConnectionObserver,
   // 仅用于打印/UI 显示，不影响逻辑。
   using StateCallback = std::function<void(const std::string& state)>;
 
+  // GetStats 异步返回后上报一条传输 RTT 样本（毫秒，>0）。
+  using RttSampleCallback = std::function<void(int64_t rtt_ms)>;
+
   PeerConnectionClient();
   ~PeerConnectionClient() override;
 
@@ -131,6 +134,11 @@ class PeerConnectionClient : public webrtc::PeerConnectionObserver,
   // 优雅关闭：停掉所有线程、释放 WebRTC 资源。析构时也会自动调用。
   void Close();
 
+  // 异步向 WebRTC 请求最新 RTT 统计（结果写入 last_rtt_ms_）。
+  void RequestRttUpdate();
+  // 最近一次 RTT 样本（毫秒）；尚无样本时返回 -1。
+  int64_t GetLastRttMs() const;
+
   // === 业务侧设置回调 ===
   // 这些 setter 不是线程安全的：约定在 Initialize() 之后、协商开始之前调用一次。
   void SetSdpReadyCallback(SdpReadyCallback cb) { sdp_ready_cb_ = std::move(cb); }
@@ -143,6 +151,9 @@ class PeerConnectionClient : public webrtc::PeerConnectionObserver,
     local_audio_frame_cb_ = std::move(cb);
   }
   void SetStateCallback(StateCallback cb) { state_cb_ = std::move(cb); }
+  void SetRttSampleCallback(RttSampleCallback cb) {
+    rtt_sample_cb_ = std::move(cb);
+  }
 
   // === PeerConnectionObserver 接口实现（WebRTC 触发） ===
   // 这些方法都是 WebRTC 内部线程回调过来的，不能阻塞太久。
@@ -280,6 +291,9 @@ class PeerConnectionClient : public webrtc::PeerConnectionObserver,
   LocalAudioFrameCallback local_audio_frame_cb_;
   RemoteAudioFrameCallback remote_audio_frame_cb_;
   StateCallback state_cb_;
+  RttSampleCallback rtt_sample_cb_;
+
+  std::atomic<int64_t> last_rtt_ms_{-1};
 };
 
 }  // namespace audiosub

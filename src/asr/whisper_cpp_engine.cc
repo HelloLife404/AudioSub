@@ -252,8 +252,7 @@ void WhisperCppEngine::RunInference() {
   // 这能通用地拦住“谢谢观看”等低能量输入下的幻觉字幕，且不误伤真实语音。
   constexpr float kNoSpeechThreshold = 0.6f;
   if (n_segments > 0 && max_no_speech > kNoSpeechThreshold) {
-    std::cerr << "[asr] drop hallucination, no_speech_prob=" << max_no_speech
-              << "\n";
+    std::cerr << "[asr] drop hallucination, no_speech_prob=" << max_no_speech << "\n";
     return;
   }
   if (text.empty()) return;
@@ -280,8 +279,7 @@ void WhisperCppEngine::RunInference() {
   if (text == last_text_) return;
   last_text_ = text;
 
-  const int64_t start_ms =
-      pending_start_wall_ms_ > 0 ? pending_start_wall_ms_ : NowUnixMs();
+  const int64_t start_ms = pending_start_wall_ms_ > 0 ? pending_start_wall_ms_ : NowUnixMs();
   const int64_t end_ms = NowUnixMs();
 
   core::SubtitleSegment seg;
